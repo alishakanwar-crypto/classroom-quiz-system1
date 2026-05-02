@@ -9,7 +9,6 @@ import base64
 import json
 import logging
 import os
-import pickle
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -163,7 +162,7 @@ async def upload_student_photo(student_id: int, file: UploadFile = File(...)):
                 status_code=400, detail="No face detected in uploaded photo"
             )
 
-        encoding_bytes = pickle.dumps(encodings[0])
+        encoding_bytes = encodings[0].tobytes()
         await db.execute(
             "UPDATE students SET photo_path = ?, face_encoding = ? WHERE id = ?",
             (str(photo_path), encoding_bytes, student_id),
@@ -951,7 +950,7 @@ async def import_student_faces(data: dict):
 
     db = await get_db()
     try:
-        imported = 0
+        imported_records: list[tuple[int, str, bytes]] = []
         for face in faces:
             person_id = face["person_id"]
             name = face["name"]
@@ -973,14 +972,17 @@ async def import_student_faces(data: dict):
                 )
                 student_id = cursor.lastrowid
 
-            def _load(sid=student_id, n=name, eb=encoding_bytes):
+            imported_records.append((student_id, name, encoding_bytes))
+
+        await db.commit()
+
+        for sid, n, eb in imported_records:
+            def _load(sid=sid, n=n, eb=eb):
                 with cv_lock:
                     cv_pipeline.face_recognizer.load_encoding(sid, n, eb)
             await asyncio.to_thread(_load)
-            imported += 1
 
-        await db.commit()
-        return {"status": "ok", "students_imported": imported}
+        return {"status": "ok", "students_imported": len(imported_records)}
     finally:
         await db.close()
 

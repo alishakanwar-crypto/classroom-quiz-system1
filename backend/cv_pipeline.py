@@ -8,7 +8,6 @@ import cv2
 import numpy as np
 import mediapipe as mp
 import face_recognition
-import pickle
 import time
 from pathlib import Path
 from collections import defaultdict
@@ -100,8 +99,12 @@ class FaceRecognizer:
 
     def load_encoding(self, student_id: int, name: str, encoding_bytes: bytes):
         self.remove_student(student_id)
-        encoding = pickle.loads(encoding_bytes)
-        self.known_encodings.append(encoding)
+        encoding = np.frombuffer(encoding_bytes, dtype=np.float64)
+        if encoding.shape != (128,):
+            raise ValueError(
+                f"Invalid face encoding shape {encoding.shape}, expected (128,)"
+            )
+        self.known_encodings.append(encoding.copy())
         self.known_ids.append(student_id)
         self.known_names.append(name)
 
