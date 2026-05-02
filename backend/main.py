@@ -406,6 +406,13 @@ async def next_question(session_id: int):
             return session_status
 
         next_q_id = next_q[0][0]
+
+        # Mark previous question's pending responses as not_answered
+        await db.execute(
+            "UPDATE responses SET status = 'not_answered' WHERE session_id = ? AND question_id = ? AND status = 'pending'",
+            (session_id, current_q_id),
+        )
+
         await db.execute(
             "UPDATE quiz_sessions SET current_question_id = ? WHERE id = ?",
             (next_q_id, session_id),
