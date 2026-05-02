@@ -1,16 +1,18 @@
 import { Routes, Route, Link, useLocation } from 'react-router-dom'
-import { BookOpen, Users, Play, BarChart3, Camera } from 'lucide-react'
+import { BookOpen, Users, Play, BarChart3, Camera, Server } from 'lucide-react'
 import TeacherDashboard from './pages/TeacherDashboard'
 import StudentManager from './pages/StudentManager'
 import QuizManager from './pages/QuizManager'
 import QuizSession from './pages/QuizSession'
 import LiveDashboard from './pages/LiveDashboard'
 import Results from './pages/Results'
+import DvrSettings from './pages/DvrSettings'
 
 const NAV = [
   { path: '/', label: 'Dashboard', icon: BookOpen },
   { path: '/students', label: 'Students', icon: Users },
   { path: '/quizzes', label: 'Quizzes', icon: BookOpen },
+  { path: '/dvr', label: 'DVR', icon: Server },
   { path: '/live', label: 'Live', icon: Camera },
   { path: '/results', label: 'Results', icon: BarChart3 },
 ]
@@ -51,6 +53,7 @@ export default function App() {
           <Route path="/students" element={<StudentManager />} />
           <Route path="/quizzes" element={<QuizManager />} />
           <Route path="/session/:sessionId" element={<QuizSession />} />
+          <Route path="/dvr" element={<DvrSettings />} />
           <Route path="/live" element={<LiveDashboard />} />
           <Route path="/results" element={<Results />} />
         </Routes>

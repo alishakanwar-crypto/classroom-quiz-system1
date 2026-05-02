@@ -1,11 +1,13 @@
 """
 Classroom Quiz System - Backend
 Real-time AI-powered quiz with camera-based gesture recognition.
+Supports both browser webcam and Hikvision DVR camera feeds via ISAPI.
 """
 
 import asyncio
 import base64
 import json
+import logging
 import os
 import pickle
 import threading
@@ -25,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 
 from cv_pipeline import CVPipeline
 from database import get_db, init_db
+from dvr_capture import capture_snapshot, preprocess_snapshot
 from models import (
     AnswerRecord,
     QuestionCreate,
@@ -37,6 +40,8 @@ from models import (
     StudentResponse,
 )
 
+logger = logging.getLogger("quiz.main")
+
 STUDENT_PHOTOS_DIR = Path(__file__).parent / "student_photos"
 STUDENT_PHOTOS_DIR.mkdir(exist_ok=True)
 
@@ -45,6 +50,10 @@ cv_lock = threading.Lock()
 
 # WebSocket connection manager
 connected_clients: list[WebSocket] = []
+
+# DVR polling state
+dvr_poll_task: Optional[asyncio.Task] = None
+dvr_active_camera: Optional[dict] = None  # {"dvr_id": int, "channel": int}
 
 
 async def broadcast(data: dict):
@@ -724,6 +733,389 @@ async def _get_session_status(db, session_id: int) -> dict:
         "responses": responses,
         "total_students": total_students,
         "answered_count": answered_count,
+    }
+
+
+# ─── DVR Management ───────────────────────────────────────────────────────────
+
+@app.get("/api/dvrs")
+async def list_dvrs():
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall(
+            "SELECT id, name, ip, port, username, channels FROM dvrs ORDER BY id"
+        )
+        return [
+            {"id": r[0], "name": r[1], "ip": r[2], "port": r[3],
+             "username": r[4], "channels": r[5]}
+            for r in rows
+        ]
+    finally:
+        await db.close()
+
+
+@app.post("/api/dvrs")
+async def add_dvr(data: dict):
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "INSERT INTO dvrs (name, ip, port, username, password, channels) VALUES (?, ?, ?, ?, ?, ?)",
+            (data.get("name", ""), data["ip"], data.get("port", 80),
+             data.get("username", "admin"), data.get("password", ""),
+             data.get("channels", 64)),
+        )
+        await db.commit()
+        return {"id": cursor.lastrowid, "status": "ok"}
+    finally:
+        await db.close()
+
+
+@app.delete("/api/dvrs/{dvr_id}")
+async def delete_dvr(dvr_id: int):
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM dvrs WHERE id = ?", (dvr_id,))
+        await db.commit()
+        return {"status": "ok"}
+    finally:
+        await db.close()
+
+
+@app.get("/api/dvrs/{dvr_id}/cameras")
+async def list_cameras(dvr_id: int):
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall(
+            "SELECT id, location, channel, description FROM camera_mapping WHERE dvr_id = ? ORDER BY channel",
+            (dvr_id,),
+        )
+        return [
+            {"id": r[0], "location": r[1], "channel": r[2], "description": r[3]}
+            for r in rows
+        ]
+    finally:
+        await db.close()
+
+
+@app.post("/api/dvrs/{dvr_id}/cameras")
+async def add_camera(dvr_id: int, data: dict):
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "INSERT INTO camera_mapping (location, dvr_id, channel, description) VALUES (?, ?, ?, ?)",
+            (data.get("location", ""), dvr_id, data["channel"],
+             data.get("description", "")),
+        )
+        await db.commit()
+        return {"id": cursor.lastrowid, "status": "ok"}
+    finally:
+        await db.close()
+
+
+@app.delete("/api/cameras/{camera_id}")
+async def delete_camera(camera_id: int):
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM camera_mapping WHERE id = ?", (camera_id,))
+        await db.commit()
+        return {"status": "ok"}
+    finally:
+        await db.close()
+
+
+@app.get("/api/cameras")
+async def list_all_cameras():
+    """List all cameras across all DVRs."""
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall("""
+            SELECT cm.id, cm.location, cm.dvr_id, cm.channel, cm.description,
+                   d.name as dvr_name, d.ip as dvr_ip
+            FROM camera_mapping cm
+            JOIN dvrs d ON d.id = cm.dvr_id
+            ORDER BY d.name, cm.channel
+        """)
+        return [
+            {"id": r[0], "location": r[1], "dvr_id": r[2], "channel": r[3],
+             "description": r[4], "dvr_name": r[5], "dvr_ip": r[6]}
+            for r in rows
+        ]
+    finally:
+        await db.close()
+
+
+@app.post("/api/dvrs/{dvr_id}/test")
+async def test_dvr_camera(dvr_id: int, data: dict):
+    """Test capture a snapshot from a DVR camera channel."""
+    channel = data.get("channel", 1)
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall(
+            "SELECT ip, port, username, password FROM dvrs WHERE id = ?", (dvr_id,)
+        )
+        if not rows:
+            raise HTTPException(status_code=404, detail="DVR not found")
+        dvr = {"ip": rows[0][0], "port": rows[0][1],
+               "username": rows[0][2], "password": rows[0][3]}
+    finally:
+        await db.close()
+
+    frame_bytes = await capture_snapshot(dvr, channel, max_retries=1)
+    if frame_bytes is None:
+        raise HTTPException(status_code=502, detail="Failed to capture from DVR")
+
+    encoded = base64.b64encode(frame_bytes).decode()
+    return {"status": "ok", "image": f"data:image/jpeg;base64,{encoded}",
+            "size_bytes": len(frame_bytes)}
+
+
+@app.post("/api/dvrs/import-config")
+async def import_dvr_config(data: dict):
+    """Import DVR and camera configuration from campus agent database.
+
+    Expects: {"db_path": "/path/to/campus-agent/campus_agent.db"}
+    """
+    import sqlite3
+
+    db_path = data.get("db_path", "")
+    if not db_path or not Path(db_path).exists():
+        raise HTTPException(status_code=400, detail="Campus agent database not found")
+
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+
+        agent_dvrs = conn.execute(
+            "SELECT name, ip, port, username, password, channels FROM dvrs ORDER BY id"
+        ).fetchall()
+
+        agent_cameras = conn.execute(
+            "SELECT location, dvr_index, channel, description FROM camera_mapping"
+        ).fetchall()
+        conn.close()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read campus agent DB: {e}")
+
+    db = await get_db()
+    try:
+        dvr_id_map = {}
+        for i, dvr in enumerate(agent_dvrs):
+            cursor = await db.execute(
+                "INSERT INTO dvrs (name, ip, port, username, password, channels) VALUES (?, ?, ?, ?, ?, ?)",
+                (dvr["name"], dvr["ip"], dvr["port"], dvr["username"],
+                 dvr["password"], dvr["channels"]),
+            )
+            dvr_id_map[i] = cursor.lastrowid
+
+        for cam in agent_cameras:
+            dvr_idx = cam["dvr_index"]
+            if dvr_idx in dvr_id_map:
+                await db.execute(
+                    "INSERT INTO camera_mapping (location, dvr_id, channel, description) VALUES (?, ?, ?, ?)",
+                    (cam["location"], dvr_id_map[dvr_idx], cam["channel"],
+                     cam["description"]),
+                )
+
+        await db.commit()
+        return {"status": "ok", "dvrs_imported": len(agent_dvrs),
+                "cameras_imported": len(agent_cameras)}
+    finally:
+        await db.close()
+
+
+@app.post("/api/students/import-faces")
+async def import_student_faces(data: dict):
+    """Import student face encodings from campus agent database.
+
+    Expects: {"db_path": "/path/to/campus-agent/campus_agent.db"}
+    Only imports face_recognition_128d encodings (compatible with this system).
+    """
+    import sqlite3
+
+    db_path = data.get("db_path", "")
+    if not db_path or not Path(db_path).exists():
+        raise HTTPException(status_code=400, detail="Campus agent database not found")
+
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+
+        faces = conn.execute(
+            "SELECT DISTINCT person_id, name, encoding FROM registered_faces "
+            "WHERE encoding_type = 'face_recognition_128d' "
+            "ORDER BY person_id"
+        ).fetchall()
+        conn.close()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read campus agent DB: {e}")
+
+    db = await get_db()
+    try:
+        imported = 0
+        for face in faces:
+            person_id = face["person_id"]
+            name = face["name"]
+            encoding_bytes = face["encoding"]
+
+            existing = await db.execute_fetchall(
+                "SELECT id FROM students WHERE roll_number = ?", (person_id,)
+            )
+            if existing:
+                student_id = existing[0][0]
+                await db.execute(
+                    "UPDATE students SET face_encoding = ? WHERE id = ?",
+                    (encoding_bytes, student_id),
+                )
+            else:
+                cursor = await db.execute(
+                    "INSERT INTO students (name, roll_number, face_encoding) VALUES (?, ?, ?)",
+                    (name, person_id, encoding_bytes),
+                )
+                student_id = cursor.lastrowid
+
+            def _load(sid=student_id, n=name, eb=encoding_bytes):
+                with cv_lock:
+                    cv_pipeline.face_recognizer.load_encoding(sid, n, eb)
+            await asyncio.to_thread(_load)
+            imported += 1
+
+        await db.commit()
+        return {"status": "ok", "students_imported": imported}
+    finally:
+        await db.close()
+
+
+# ─── DVR Camera Polling ───────────────────────────────────────────────────────
+
+async def _dvr_poll_loop():
+    """Background loop that captures frames from DVR and processes them."""
+    global dvr_active_camera
+    while True:
+        try:
+            cam = dvr_active_camera
+            if cam is None:
+                await asyncio.sleep(1)
+                continue
+
+            db = await get_db()
+            try:
+                dvr_rows = await db.execute_fetchall(
+                    "SELECT ip, port, username, password FROM dvrs WHERE id = ?",
+                    (cam["dvr_id"],),
+                )
+                if not dvr_rows:
+                    await asyncio.sleep(1)
+                    continue
+
+                dvr = {"ip": dvr_rows[0][0], "port": dvr_rows[0][1],
+                       "username": dvr_rows[0][2], "password": dvr_rows[0][3]}
+            finally:
+                await db.close()
+
+            frame_bytes = await capture_snapshot(dvr, cam["channel"])
+            if frame_bytes is None:
+                await asyncio.sleep(2)
+                continue
+
+            enhanced = await asyncio.to_thread(preprocess_snapshot, frame_bytes)
+            nparr = np.frombuffer(enhanced, np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if frame is None:
+                await asyncio.sleep(1)
+                continue
+
+            def _process():
+                with cv_lock:
+                    return cv_pipeline.process_frame(frame)
+            detections = await asyncio.to_thread(_process)
+
+            db = await get_db()
+            try:
+                session = await db.execute_fetchall(
+                    "SELECT id, current_question_id FROM quiz_sessions "
+                    "WHERE status = 'active' ORDER BY started_at DESC LIMIT 1"
+                )
+                if session:
+                    session_id = session[0][0]
+                    question_id = session[0][1]
+
+                    if question_id:
+                        for det in detections:
+                            if det["student_id"] and det["finger_count"]:
+                                await db.execute(
+                                    """INSERT INTO responses (session_id, question_id, student_id, selected_option, status, detected_at)
+                                       VALUES (?, ?, ?, ?, 'answered', datetime('now'))
+                                       ON CONFLICT(session_id, question_id, student_id)
+                                       DO UPDATE SET selected_option = excluded.selected_option,
+                                                    status = 'answered',
+                                                    detected_at = excluded.detected_at""",
+                                    (session_id, question_id, det["student_id"], det["finger_count"]),
+                                )
+                        await db.commit()
+
+                    session_status = await _get_session_status(db, session_id)
+                    snapshot_b64 = base64.b64encode(frame_bytes).decode()
+                    await broadcast({
+                        "type": "detection_update",
+                        "data": session_status,
+                        "detections": detections,
+                        "dvr_frame": f"data:image/jpeg;base64,{snapshot_b64}",
+                    })
+            finally:
+                await db.close()
+
+            await asyncio.sleep(1)
+
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"DVR poll error: {e}")
+            await asyncio.sleep(2)
+
+
+@app.post("/api/dvr/start")
+async def start_dvr_capture(data: dict):
+    """Start capturing from a DVR camera. Expects: {"dvr_id": int, "channel": int}"""
+    global dvr_poll_task, dvr_active_camera
+
+    dvr_id = data.get("dvr_id")
+    channel = data.get("channel")
+    if not dvr_id or not channel:
+        raise HTTPException(status_code=400, detail="dvr_id and channel required")
+
+    dvr_active_camera = {"dvr_id": dvr_id, "channel": channel}
+
+    if dvr_poll_task is None or dvr_poll_task.done():
+        dvr_poll_task = asyncio.create_task(_dvr_poll_loop())
+
+    return {"status": "ok", "message": f"DVR capture started: DVR {dvr_id} ch{channel}"}
+
+
+@app.post("/api/dvr/stop")
+async def stop_dvr_capture():
+    """Stop DVR camera capture."""
+    global dvr_poll_task, dvr_active_camera
+
+    dvr_active_camera = None
+    if dvr_poll_task and not dvr_poll_task.done():
+        dvr_poll_task.cancel()
+        try:
+            await dvr_poll_task
+        except asyncio.CancelledError:
+            pass
+    dvr_poll_task = None
+
+    return {"status": "ok", "message": "DVR capture stopped"}
+
+
+@app.get("/api/dvr/status")
+async def dvr_capture_status():
+    """Get current DVR capture status."""
+    active = dvr_active_camera is not None
+    return {
+        "active": active,
+        "camera": dvr_active_camera,
+        "poll_task_running": dvr_poll_task is not None and not dvr_poll_task.done(),
     }
 
 

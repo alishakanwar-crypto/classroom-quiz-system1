@@ -74,6 +74,25 @@ async def init_db():
                 UNIQUE(session_id, question_id, student_id)
             );
 
+            CREATE TABLE IF NOT EXISTS dvrs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL DEFAULT '',
+                ip TEXT NOT NULL,
+                port INTEGER NOT NULL DEFAULT 80,
+                username TEXT NOT NULL DEFAULT 'admin',
+                password TEXT NOT NULL DEFAULT '',
+                channels INTEGER NOT NULL DEFAULT 64
+            );
+
+            CREATE TABLE IF NOT EXISTS camera_mapping (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                location TEXT NOT NULL,
+                dvr_id INTEGER NOT NULL,
+                channel INTEGER NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY (dvr_id) REFERENCES dvrs(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_responses_session ON responses(session_id);
             CREATE INDEX IF NOT EXISTS idx_responses_question ON responses(question_id);
             CREATE INDEX IF NOT EXISTS idx_questions_quiz ON questions(quiz_id);

@@ -1,7 +1,10 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
-import { Camera, SkipForward, Square, Clock, Hand, User } from 'lucide-react'
-import { getSession, nextQuestion, endSession, processFrameBase64, connectWS } from '../utils/api'
+import { Camera, SkipForward, Square, Clock, Hand, User, Server } from 'lucide-react'
+import {
+  getSession, nextQuestion, endSession, processFrameBase64, connectWS,
+  getAllCameras, startDvrCapture, stopDvrCapture, getDvrStatus
+} from '../utils/api'
 
 const OPTION_LABELS = { 1: '1 finger', 2: '2 fingers', 3: '3 fingers', 4: '4 fingers' }
 const OPTION_COLORS = {
@@ -15,6 +18,11 @@ export default function QuizSession() {
   const { sessionId } = useParams()
   const [session, setSession] = useState(null)
   const [cameraActive, setCameraActive] = useState(false)
+  const [cameraMode, setCameraMode] = useState('dvr') // 'webcam' or 'dvr'
+  const [dvrCameras, setDvrCameras] = useState([])
+  const [selectedCamera, setSelectedCamera] = useState('')
+  const [dvrFrame, setDvrFrame] = useState(null)
+  const [dvrCapturing, setDvrCapturing] = useState(false)
   const [timeLeft, setTimeLeft] = useState(null)
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
@@ -32,6 +40,14 @@ export default function QuizSession() {
 
   useEffect(() => {
     loadSession()
+    getAllCameras().then(setDvrCameras).catch(() => {})
+    getDvrStatus().then(s => {
+      if (s.active) {
+        setDvrCapturing(true)
+        setCameraMode('dvr')
+      }
+    }).catch(() => {})
+
     const ws = connectWS((msg) => {
       if (msg.data?.session_id === parseInt(sessionId)) {
         setSession(msg.data)
@@ -39,9 +55,15 @@ export default function QuizSession() {
           setTimeLeft(msg.data.current_question.time_limit)
         }
       }
+      if (msg.dvr_frame) {
+        setDvrFrame(msg.dvr_frame)
+      }
     })
     wsRef.current = ws
-    return () => { ws.close(); stopCamera() }
+    return () => {
+      ws.close()
+      stopCamera()
+    }
   }, [sessionId, loadSession])
 
   // Countdown timer
@@ -64,7 +86,6 @@ export default function QuizSession() {
       if (videoRef.current) {
         videoRef.current.srcObject = stream
         setCameraActive(true)
-        // Start sending frames to backend
         intervalRef.current = setInterval(captureAndSend, 1000)
       } else {
         stream.getTracks().forEach(t => t.stop())
@@ -81,6 +102,28 @@ export default function QuizSession() {
     }
     if (intervalRef.current) clearInterval(intervalRef.current)
     setCameraActive(false)
+  }
+
+  const startDvr = async () => {
+    if (!selectedCamera) return
+    const cam = dvrCameras.find(c => c.id === parseInt(selectedCamera))
+    if (!cam) return
+    try {
+      await startDvrCapture(cam.dvr_id, cam.channel)
+      setDvrCapturing(true)
+    } catch (err) {
+      alert('Failed to start DVR: ' + err.message)
+    }
+  }
+
+  const stopDvr = async () => {
+    try {
+      await stopDvrCapture()
+      setDvrCapturing(false)
+      setDvrFrame(null)
+    } catch {
+      // ignore
+    }
   }
 
   const captureAndSend = async () => {
@@ -107,6 +150,7 @@ export default function QuizSession() {
   const handleEnd = async () => {
     if (!confirm('End this quiz session?')) return
     stopCamera()
+    await stopDvr()
     const data = await endSession(sessionId)
     setSession(data)
   }
@@ -128,9 +172,6 @@ export default function QuizSession() {
         </div>
         {isActive && (
           <div className="flex gap-2">
-            <button onClick={cameraActive ? stopCamera : startCamera} className={`px-3 py-2 rounded-lg text-sm font-medium flex items-center gap-1.5 ${cameraActive ? 'bg-red-100 text-red-700 hover:bg-red-200' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
-              <Camera size={16} /> {cameraActive ? 'Stop Camera' : 'Start Camera'}
-            </button>
             <button onClick={handleNext} className="bg-indigo-600 text-white px-3 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 flex items-center gap-1.5">
               <SkipForward size={16} /> Next Question
             </button>
@@ -140,6 +181,56 @@ export default function QuizSession() {
           </div>
         )}
       </div>
+
+      {/* Camera Source Selector */}
+      {isActive && (
+        <div className="bg-white rounded-xl shadow border p-3">
+          <div className="flex items-center gap-4">
+            <div className="flex gap-2">
+              <button onClick={() => setCameraMode('dvr')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 ${cameraMode === 'dvr' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                <Server size={14} /> DVR Camera
+              </button>
+              <button onClick={() => setCameraMode('webcam')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 ${cameraMode === 'webcam' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                <Camera size={14} /> Webcam
+              </button>
+            </div>
+
+            {cameraMode === 'dvr' && (
+              <div className="flex items-center gap-2 flex-1">
+                <select value={selectedCamera} onChange={(e) => setSelectedCamera(e.target.value)}
+                  className="border rounded-lg px-2 py-1.5 text-sm flex-1" disabled={dvrCapturing}>
+                  <option value="">Select classroom camera...</option>
+                  {dvrCameras.map(c => (
+                    <option key={c.id} value={c.id}>{c.location || `Ch.${c.channel}`} ({c.dvr_name})</option>
+                  ))}
+                </select>
+                {dvrCapturing ? (
+                  <button onClick={stopDvr} className="bg-red-100 text-red-700 px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-red-200 flex items-center gap-1">
+                    <Square size={12} /> Stop
+                  </button>
+                ) : (
+                  <button onClick={startDvr} disabled={!selectedCamera}
+                    className="bg-green-600 text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-green-700 disabled:opacity-50 flex items-center gap-1">
+                    <Camera size={12} /> Start
+                  </button>
+                )}
+              </div>
+            )}
+
+            {cameraMode === 'webcam' && (
+              <button onClick={cameraActive ? stopCamera : startCamera}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 ${cameraActive ? 'bg-red-100 text-red-700 hover:bg-red-200' : 'bg-green-600 text-white hover:bg-green-700'}`}>
+                <Camera size={14} /> {cameraActive ? 'Stop Webcam' : 'Start Webcam'}
+              </button>
+            )}
+          </div>
+          {dvrCameras.length === 0 && cameraMode === 'dvr' && (
+            <p className="text-xs text-gray-400 mt-2">No DVR cameras configured. Go to DVR Settings to add your Hikvision NVR cameras.</p>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Question Display (Smart Board view) */}
@@ -188,14 +279,35 @@ export default function QuizSession() {
 
           {/* Camera feed */}
           <div className="bg-black rounded-xl overflow-hidden relative" style={{ minHeight: 300 }}>
-            <video ref={videoRef} autoPlay playsInline muted className="w-full h-auto" />
-            <canvas ref={canvasRef} className="hidden" />
-            {!cameraActive && (
+            {cameraMode === 'webcam' && (
+              <>
+                <video ref={videoRef} autoPlay playsInline muted className="w-full h-auto" />
+                <canvas ref={canvasRef} className="hidden" />
+              </>
+            )}
+            {cameraMode === 'dvr' && dvrFrame && (
+              <img src={dvrFrame} alt="DVR camera feed" className="w-full h-auto" />
+            )}
+            {cameraMode === 'dvr' && dvrCapturing && (
+              <div className="absolute top-2 right-2 bg-red-600 text-white text-xs px-2 py-1 rounded-full flex items-center gap-1 animate-pulse">
+                <div className="w-2 h-2 bg-white rounded-full" /> LIVE
+              </div>
+            )}
+            {!cameraActive && !dvrCapturing && (
               <div className="absolute inset-0 flex items-center justify-center text-white text-sm">
                 <div className="text-center">
-                  <Camera size={40} className="mx-auto mb-2 opacity-50" />
-                  <p className="opacity-50">Camera feed will appear here</p>
-                  {isActive && <button onClick={startCamera} className="mt-2 bg-blue-600 px-4 py-2 rounded-lg text-sm hover:bg-blue-700">Start Camera</button>}
+                  {cameraMode === 'dvr' ? (
+                    <>
+                      <Server size={40} className="mx-auto mb-2 opacity-50" />
+                      <p className="opacity-50">DVR camera feed will appear here</p>
+                      <p className="opacity-30 text-xs mt-1">Select a camera and click Start above</p>
+                    </>
+                  ) : (
+                    <>
+                      <Camera size={40} className="mx-auto mb-2 opacity-50" />
+                      <p className="opacity-50">Webcam feed will appear here</p>
+                    </>
+                  )}
                 </div>
               </div>
             )}

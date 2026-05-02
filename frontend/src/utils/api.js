@@ -51,6 +51,23 @@ export const getSessionResults = (id) => request(`/sessions/${id}/results`)
 export const processFrameBase64 = (imageData) =>
   request('/process-frame-base64', { method: 'POST', body: JSON.stringify({ image: imageData }) })
 
+// DVR Management
+export const getDvrs = () => request('/dvrs')
+export const addDvr = (data) => request('/dvrs', { method: 'POST', body: JSON.stringify(data) })
+export const deleteDvr = (id) => request(`/dvrs/${id}`, { method: 'DELETE' })
+export const getDvrCameras = (dvrId) => request(`/dvrs/${dvrId}/cameras`)
+export const addDvrCamera = (dvrId, data) => request(`/dvrs/${dvrId}/cameras`, { method: 'POST', body: JSON.stringify(data) })
+export const deleteCamera = (id) => request(`/cameras/${id}`, { method: 'DELETE' })
+export const getAllCameras = () => request('/cameras')
+export const testDvrCamera = (dvrId, channel) => request(`/dvrs/${dvrId}/test`, { method: 'POST', body: JSON.stringify({ channel }) })
+export const importDvrConfig = (dbPath) => request('/dvrs/import-config', { method: 'POST', body: JSON.stringify({ db_path: dbPath }) })
+export const importStudentFaces = (dbPath) => request('/students/import-faces', { method: 'POST', body: JSON.stringify({ db_path: dbPath }) })
+
+// DVR Capture Control
+export const startDvrCapture = (dvrId, channel) => request('/dvr/start', { method: 'POST', body: JSON.stringify({ dvr_id: dvrId, channel }) })
+export const stopDvrCapture = () => request('/dvr/stop', { method: 'POST', body: JSON.stringify({}) })
+export const getDvrStatus = () => request('/dvr/status')
+
 // WebSocket with managed reconnection
 export function connectWS(onMessage) {
   const state = { ws: null, closed: false, reconnectTimeout: null }
