@@ -1128,6 +1128,23 @@ async def health_check():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
 
 
+# ─── Serve Frontend Static Files ──────────────────────────────────────────────
+
+STATIC_DIR = Path(__file__).parent / "static"
+if STATIC_DIR.exists():
+    from fastapi.responses import FileResponse
+
+    app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        """Serve the React SPA for all non-API routes."""
+        file_path = STATIC_DIR / full_path
+        if file_path.is_file():
+            return FileResponse(file_path)
+        return FileResponse(STATIC_DIR / "index.html")
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
