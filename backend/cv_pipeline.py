@@ -91,7 +91,15 @@ class FaceRecognizer:
         self.known_names.append(name)
         return True
 
+    def remove_student(self, student_id: int):
+        indices = [i for i, sid in enumerate(self.known_ids) if sid == student_id]
+        for i in reversed(indices):
+            del self.known_encodings[i]
+            del self.known_ids[i]
+            del self.known_names[i]
+
     def load_encoding(self, student_id: int, name: str, encoding_bytes: bytes):
+        self.remove_student(student_id)
         encoding = pickle.loads(encoding_bytes)
         self.known_encodings.append(encoding)
         self.known_ids.append(student_id)

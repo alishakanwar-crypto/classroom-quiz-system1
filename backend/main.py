@@ -170,6 +170,7 @@ async def delete_student(student_id: int):
     try:
         await db.execute("DELETE FROM students WHERE id = ?", (student_id,))
         await db.commit()
+        cv_pipeline.face_recognizer.remove_student(student_id)
         photo_path = STUDENT_PHOTOS_DIR / f"{student_id}.jpg"
         photo_path.unlink(missing_ok=True)
         return {"status": "ok"}

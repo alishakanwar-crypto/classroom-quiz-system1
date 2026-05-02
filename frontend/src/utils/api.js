@@ -16,10 +16,15 @@ async function request(path, options = {}) {
 export const getStudents = () => request('/students')
 export const createStudent = (data) => request('/students', { method: 'POST', body: JSON.stringify(data) })
 export const deleteStudent = (id) => request(`/students/${id}`, { method: 'DELETE' })
-export const uploadStudentPhoto = (id, file) => {
+export const uploadStudentPhoto = async (id, file) => {
   const form = new FormData()
   form.append('file', file)
-  return fetch(`${API_BASE}/students/${id}/photo`, { method: 'POST', body: form }).then(r => r.json())
+  const res = await fetch(`${API_BASE}/students/${id}/photo`, { method: 'POST', body: form })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || 'Upload failed')
+  }
+  return res.json()
 }
 
 // Quizzes
@@ -49,7 +54,19 @@ export const processFrameBase64 = (imageData) =>
 export function connectWS(onMessage) {
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
   const ws = new WebSocket(`${proto}://${window.location.host}/ws`)
+  let intentionallyClosed = false
+  let reconnectTimeout = null
   ws.onmessage = (e) => onMessage(JSON.parse(e.data))
-  ws.onclose = () => setTimeout(() => connectWS(onMessage), 3000)
+  ws.onclose = () => {
+    if (!intentionallyClosed) {
+      reconnectTimeout = setTimeout(() => connectWS(onMessage), 3000)
+    }
+  }
+  const originalClose = ws.close.bind(ws)
+  ws.close = () => {
+    intentionallyClosed = true
+    if (reconnectTimeout) clearTimeout(reconnectTimeout)
+    originalClose()
+  }
   return ws
 }
