@@ -388,6 +388,10 @@ async def next_question(session_id: int):
                 "UPDATE quiz_sessions SET status = 'completed', ended_at = datetime('now') WHERE id = ?",
                 (session_id,),
             )
+            await db.execute(
+                "UPDATE responses SET status = 'not_answered' WHERE session_id = ? AND status = 'pending'",
+                (session_id,),
+            )
             await db.commit()
             session_status = await _get_session_status(db, session_id)
             await broadcast({"type": "session_ended", "data": session_status})

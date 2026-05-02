@@ -50,23 +50,31 @@ export const getSessionResults = (id) => request(`/sessions/${id}/results`)
 export const processFrameBase64 = (imageData) =>
   request('/process-frame-base64', { method: 'POST', body: JSON.stringify({ image: imageData }) })
 
-// WebSocket
+// WebSocket with managed reconnection
 export function connectWS(onMessage) {
-  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  const ws = new WebSocket(`${proto}://${window.location.host}/ws`)
-  let intentionallyClosed = false
-  let reconnectTimeout = null
-  ws.onmessage = (e) => onMessage(JSON.parse(e.data))
-  ws.onclose = () => {
-    if (!intentionallyClosed) {
-      reconnectTimeout = setTimeout(() => connectWS(onMessage), 3000)
+  const state = { ws: null, closed: false, reconnectTimeout: null }
+
+  function connect() {
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+    const ws = new WebSocket(`${proto}://${window.location.host}/ws`)
+    state.ws = ws
+    ws.onmessage = (e) => {
+      if (!state.closed) onMessage(JSON.parse(e.data))
+    }
+    ws.onclose = () => {
+      if (!state.closed) {
+        state.reconnectTimeout = setTimeout(connect, 3000)
+      }
     }
   }
-  const originalClose = ws.close.bind(ws)
-  ws.close = () => {
-    intentionallyClosed = true
-    if (reconnectTimeout) clearTimeout(reconnectTimeout)
-    originalClose()
+
+  connect()
+
+  return {
+    close() {
+      state.closed = true
+      if (state.reconnectTimeout) clearTimeout(state.reconnectTimeout)
+      if (state.ws) state.ws.close()
+    }
   }
-  return ws
 }
