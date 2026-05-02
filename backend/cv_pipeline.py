@@ -242,6 +242,7 @@ class CVPipeline:
     ) -> list[dict]:
         """Match detected hands to the nearest face based on proximity."""
         matched = []
+        matched_hand_indices: set[int] = set()
 
         for face in faces:
             if face["student_id"] is None:
@@ -250,9 +251,12 @@ class CVPipeline:
             face_cx = (face["bbox"][0] + face["bbox"][2]) / 2
             face_bottom = face["bbox"][3]
             best_hand = None
+            best_hand_idx = -1
             best_dist = float("inf")
 
-            for hand in hands:
+            for idx, hand in enumerate(hands):
+                if idx in matched_hand_indices:
+                    continue
                 hx, hy = hand["center"]
                 # Hand should be below the face
                 if hy < face_bottom:
@@ -261,6 +265,10 @@ class CVPipeline:
                 if dist < best_dist and dist < frame_width * 0.3:
                     best_dist = dist
                     best_hand = hand
+                    best_hand_idx = idx
+
+            if best_hand is not None:
+                matched_hand_indices.add(best_hand_idx)
 
             finger_count = best_hand["finger_count"] if best_hand else None
 

@@ -143,8 +143,8 @@ async def upload_student_photo(student_id: int, file: UploadFile = File(...)):
         photo_path.write_bytes(contents)
 
         # Generate face encoding
-        image = face_recognition.load_image_file(str(photo_path))
-        encodings = face_recognition.face_encodings(image)
+        image = await asyncio.to_thread(face_recognition.load_image_file, str(photo_path))
+        encodings = await asyncio.to_thread(face_recognition.face_encodings, image)
         if not encodings:
             photo_path.unlink(missing_ok=True)
             raise HTTPException(
@@ -638,7 +638,7 @@ async def websocket_endpoint(ws: WebSocket):
         while True:
             data = await ws.receive_text()
             # Keep connection alive; clients can send pings
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, Exception):
         if ws in connected_clients:
             connected_clients.remove(ws)
 
