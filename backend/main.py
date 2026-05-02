@@ -51,7 +51,7 @@ async def broadcast(data: dict):
     """Broadcast data to all connected WebSocket clients."""
     message = json.dumps(data, default=str)
     disconnected = []
-    for ws in connected_clients:
+    for ws in list(connected_clients):
         try:
             await ws.send_text(message)
         except Exception:
@@ -523,6 +523,9 @@ async def process_frame(file: UploadFile = File(...)):
             session_id = session[0][0]
             question_id = session[0][1]
 
+            if not question_id:
+                return {"detections": detections}
+
             for det in detections:
                 if det["student_id"] and det["finger_count"]:
                     await db.execute(
@@ -571,6 +574,9 @@ async def process_frame_base64(data: dict):
         if session:
             session_id = session[0][0]
             question_id = session[0][1]
+
+            if not question_id:
+                return {"detections": detections}
 
             for det in detections:
                 if det["student_id"] and det["finger_count"]:
