@@ -35,6 +35,9 @@ export default function QuizSession() {
     const ws = connectWS((msg) => {
       if (msg.data?.session_id === parseInt(sessionId)) {
         setSession(msg.data)
+        if (msg.data.current_question) {
+          setTimeLeft(msg.data.current_question.time_limit)
+        }
       }
     })
     wsRef.current = ws

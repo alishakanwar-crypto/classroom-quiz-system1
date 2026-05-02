@@ -159,7 +159,10 @@ async def upload_student_photo(student_id: int, file: UploadFile = File(...)):
         await db.commit()
 
         # Register in live pipeline
-        cv_pipeline.face_recognizer.load_encoding(student_id, name, encoding_bytes)
+        def _load():
+            with cv_lock:
+                cv_pipeline.face_recognizer.load_encoding(student_id, name, encoding_bytes)
+        await asyncio.to_thread(_load)
 
         return {"status": "ok", "message": f"Photo uploaded for {name}"}
     finally:
@@ -172,7 +175,10 @@ async def delete_student(student_id: int):
     try:
         await db.execute("DELETE FROM students WHERE id = ?", (student_id,))
         await db.commit()
-        cv_pipeline.face_recognizer.remove_student(student_id)
+        def _remove():
+            with cv_lock:
+                cv_pipeline.face_recognizer.remove_student(student_id)
+        await asyncio.to_thread(_remove)
         photo_path = STUDENT_PHOTOS_DIR / f"{student_id}.jpg"
         photo_path.unlink(missing_ok=True)
         return {"status": "ok"}
