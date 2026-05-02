@@ -56,8 +56,8 @@ async def init_db():
                 status TEXT DEFAULT 'waiting',
                 started_at TIMESTAMP,
                 ended_at TIMESTAMP,
-                FOREIGN KEY (quiz_id) REFERENCES quizzes(id),
-                FOREIGN KEY (current_question_id) REFERENCES questions(id)
+                FOREIGN KEY (quiz_id) REFERENCES quizzes(id) ON DELETE CASCADE,
+                FOREIGN KEY (current_question_id) REFERENCES questions(id) ON DELETE SET NULL
             );
 
             CREATE TABLE IF NOT EXISTS responses (
@@ -68,9 +68,9 @@ async def init_db():
                 selected_option INTEGER,
                 status TEXT DEFAULT 'pending',
                 detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (session_id) REFERENCES quiz_sessions(id),
-                FOREIGN KEY (question_id) REFERENCES questions(id),
-                FOREIGN KEY (student_id) REFERENCES students(id),
+                FOREIGN KEY (session_id) REFERENCES quiz_sessions(id) ON DELETE CASCADE,
+                FOREIGN KEY (question_id) REFERENCES questions(id) ON DELETE CASCADE,
+                FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
                 UNIQUE(session_id, question_id, student_id)
             );
 

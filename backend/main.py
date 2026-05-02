@@ -57,7 +57,10 @@ async def broadcast(data: dict):
         except Exception:
             disconnected.append(ws)
     for ws in disconnected:
-        connected_clients.remove(ws)
+        try:
+            connected_clients.remove(ws)
+        except ValueError:
+            pass
 
 
 @asynccontextmanager
