@@ -8,6 +8,7 @@ import base64
 import json
 import os
 import pickle
+import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -40,6 +41,7 @@ STUDENT_PHOTOS_DIR = Path(__file__).parent / "student_photos"
 STUDENT_PHOTOS_DIR.mkdir(exist_ok=True)
 
 cv_pipeline = CVPipeline()
+cv_lock = threading.Lock()
 
 # WebSocket connection manager
 connected_clients: list[WebSocket] = []
@@ -483,7 +485,10 @@ async def process_frame(file: UploadFile = File(...)):
     if frame is None:
         raise HTTPException(status_code=400, detail="Invalid image")
 
-    detections = cv_pipeline.process_frame(frame)
+    def _process():
+        with cv_lock:
+            return cv_pipeline.process_frame(frame)
+    detections = await asyncio.to_thread(_process)
 
     # Find active session
     db = await get_db()
@@ -530,7 +535,10 @@ async def process_frame_base64(data: dict):
     if frame is None:
         raise HTTPException(status_code=400, detail="Invalid image")
 
-    detections = cv_pipeline.process_frame(frame)
+    def _process():
+        with cv_lock:
+            return cv_pipeline.process_frame(frame)
+    detections = await asyncio.to_thread(_process)
 
     db = await get_db()
     try:
@@ -625,7 +633,8 @@ async def websocket_endpoint(ws: WebSocket):
             data = await ws.receive_text()
             # Keep connection alive; clients can send pings
     except WebSocketDisconnect:
-        connected_clients.remove(ws)
+        if ws in connected_clients:
+            connected_clients.remove(ws)
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────

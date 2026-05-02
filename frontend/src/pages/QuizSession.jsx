@@ -63,6 +63,8 @@ export default function QuizSession() {
         setCameraActive(true)
         // Start sending frames to backend
         intervalRef.current = setInterval(captureAndSend, 1000)
+      } else {
+        stream.getTracks().forEach(t => t.stop())
       }
     } catch (err) {
       alert('Camera access denied: ' + err.message)
