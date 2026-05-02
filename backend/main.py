@@ -356,7 +356,10 @@ async def start_session(data: QuizSessionCreate):
             )
         await db.commit()
 
-        cv_pipeline.reset_stabilizer()
+        def _reset():
+            with cv_lock:
+                cv_pipeline.reset_stabilizer()
+        await asyncio.to_thread(_reset)
 
         session_status = await _get_session_status(db, session_id)
         await broadcast({"type": "session_started", "data": session_status})
@@ -427,7 +430,10 @@ async def next_question(session_id: int):
             )
         await db.commit()
 
-        cv_pipeline.reset_stabilizer()
+        def _reset():
+            with cv_lock:
+                cv_pipeline.reset_stabilizer()
+        await asyncio.to_thread(_reset)
 
         session_status = await _get_session_status(db, session_id)
         await broadcast({"type": "next_question", "data": session_status})
